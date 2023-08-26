@@ -2,13 +2,14 @@ package schema
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 )
 
 type Column struct {
 	Name     string
 	Nullable bool
-	Type     string
+	dbType   string
 }
 
 func (c Column) Format(val any) string {
@@ -23,6 +24,12 @@ func (c Column) Format(val any) string {
 	switch t := val.(type) {
 	case []uint8:
 		return c.formatBytes(t)
+	case int64:
+		return strconv.FormatInt(t, 10)
+	case float32:
+		return strconv.FormatFloat(float64(t), 'f', -1, 32)
+	case float64:
+		return strconv.FormatFloat(t, 'f', -1, 64)
 	}
 
 	panic(fmt.Sprintf("unsupported type %T", val))
@@ -44,5 +51,5 @@ func (c Column) formatBytes(val []uint8) string {
 // timestamp
 
 func (c Column) isInt() bool {
-	return strings.HasPrefix(c.Type, "int") || strings.HasPrefix(c.Type, "tinyint")
+	return strings.HasPrefix(c.dbType, "int") || strings.HasPrefix(c.dbType, "tinyint")
 }

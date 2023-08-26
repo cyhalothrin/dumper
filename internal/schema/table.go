@@ -4,62 +4,35 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/cyhalothrin/dumper/internal/db"
 )
 
 type Table struct {
-	Name        string
-	columnNames []string
-	columns     map[string]Column
+	Name         string
+	foreignKeys  []*ForeignKey
+	PrimaryKey   *PrimaryKey
+	columnsOrder []string
+	columns      map[string]Column
 }
 
-func GetTable(tableName string) *Table {
+func GetTable(ctx context.Context, tableName string) (*Table, error) {
 	if t, ok := tables[tableName]; ok {
-		return t
+		return t, nil
 	}
 
-	t := &Table{
-		Name: tableName,
-	}
-
-	tables[tableName] = t
-
-	return t
-}
-
-func (t *Table) describe(ctx context.Context) error {
-	if t.columns != nil {
-		return nil
-	}
-
-	t.columns = make(map[string]Column)
-
-	var tableDescription []columnDescription
-
-	err := db.SourceDB.SelectContext(ctx, &tableDescription, "DESCRIBE "+t.Name)
+	table, err := describeTable(ctx, tableName)
 	if err != nil {
-		return fmt.Errorf("get table %s description: %w", t.Name, err)
-	}
-
-	for _, columnDesc := range tableDescription {
-		t.columnNames = append(t.columnNames, columnDesc.Field)
-
-		t.columns[columnDesc.Field] = Column{
-			Name:     columnDesc.Field,
-			Nullable: columnDesc.Null == "YES",
-			Type:     columnDesc.Type,
-		}
-	}
-
-	return nil
-}
-
-func (t *Table) GetNotNullColumns(ctx context.Context) ([]string, error) {
-	if err := t.describe(ctx); err != nil {
 		return nil, err
 	}
 
+	tables[tableName] = table
+
+	return table, nil
+}
+
+func (t *Table) GetNotNullColumns() []string {
 	var notNullColumns []string
 
 	for _, column := range t.columns {
@@ -68,26 +41,150 @@ func (t *Table) GetNotNullColumns(ctx context.Context) ([]string, error) {
 		}
 	}
 
-	return notNullColumns, nil
-}
-
-func (t *Table) ColumnNames(ctx context.Context) ([]string, error) {
-	if err := t.describe(ctx); err != nil {
-		return nil, err
-	}
-
-	return t.columnNames, nil
+	return notNullColumns
 }
 
 func (t *Table) Column(name string) Column {
 	return t.columns[name]
 }
 
-type columnDescription struct {
-	Field   string         `db:"Field"`
-	Type    string         `db:"Type"`
-	Null    string         `db:"Null"`
-	Key     string         `db:"Key"`
-	Extra   string         `db:"Extra"`
-	Default sql.NullString `db:"Default"`
+func (t *Table) Columns() []string {
+	columnsCopy := make([]string, len(t.columnsOrder))
+
+	copy(columnsCopy, t.columnsOrder)
+
+	return columnsCopy
+}
+
+func (t *Table) ForeignKey(columnName string) *ForeignKey {
+	for _, fk := range t.foreignKeys {
+		for _, col := range fk.Columns {
+			if col == columnName {
+				return fk
+			}
+		}
+	}
+
+	return nil
+}
+
+func describeTable(ctx context.Context, name string) (*Table, error) {
+	t := &Table{
+		Name: name,
+	}
+
+	if err := describeColumns(ctx, t); err != nil {
+		return nil, err
+	}
+
+	if err := describePrimaryKey(ctx, t); err != nil {
+		return nil, err
+	}
+
+	if err := describeForeignKeys(ctx, t); err != nil {
+		return nil, err
+	}
+
+	return t, nil
+}
+
+func describeColumns(ctx context.Context, table *Table) error {
+	table.columns = make(map[string]Column)
+
+	type columnDescription struct {
+		Field   string         `db:"Field"`
+		Type    string         `db:"Type"`
+		Null    string         `db:"Null"`
+		Key     string         `db:"Key"`
+		Extra   string         `db:"Extra"`
+		Default sql.NullString `db:"Default"`
+	}
+
+	var tableDescription []columnDescription
+
+	err := db.SourceDB.SelectContext(ctx, &tableDescription, "DESCRIBE "+table.Name)
+	if err != nil {
+		return fmt.Errorf("get table %s description: %w", table.Name, err)
+	}
+
+	for _, columnDesc := range tableDescription {
+		table.columnsOrder = append(table.columnsOrder, columnDesc.Field)
+
+		table.columns[columnDesc.Field] = Column{
+			Name:     columnDesc.Field,
+			Nullable: columnDesc.Null == "YES",
+			dbType:   columnDesc.Type,
+		}
+	}
+
+	return nil
+}
+
+func describeForeignKeys(ctx context.Context, table *Table) error {
+	type fkDescription struct {
+		ColumnName           string `db:"column_name"`
+		ReferencedTable      string `db:"REFERENCED_TABLE_NAME"`
+		ReferencedColumnName string `db:"referenced_column_name"`
+	}
+
+	var records []fkDescription
+
+	query := `SELECT GROUP_CONCAT(COLUMN_NAME) AS column_name, 
+		REFERENCED_TABLE_NAME, 
+		GROUP_CONCAT(REFERENCED_COLUMN_NAME) AS referenced_column_name
+	FROM information_schema.KEY_COLUMN_USAGE
+	WHERE REFERENCED_TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND REFERENCED_TABLE_NAME IS NOT NULL
+	GROUP BY CONSTRAINT_NAME`
+
+	err := db.SourceDB.SelectContext(ctx, &records, query, table.Name)
+	if err != nil {
+		return fmt.Errorf("get table %s foreign keys: %w", table.Name, err)
+	}
+
+	table.foreignKeys = make([]*ForeignKey, 0, len(records)) // To show that we have already tried to get foreign keys
+
+	for _, fkDesc := range records {
+		table.foreignKeys = append(table.foreignKeys, &ForeignKey{
+			Columns:             strings.Split(fkDesc.ColumnName, ","),
+			ReferencedTableName: fkDesc.ReferencedTable,
+			ReferencedColumns:   strings.Split(fkDesc.ReferencedColumnName, ","),
+		})
+	}
+
+	return nil
+}
+
+func describePrimaryKey(ctx context.Context, table *Table) error {
+	rows, err := db.SourceDB.QueryxContext(ctx, "SHOW KEYS FROM "+table.Name+" WHERE Key_name = 'PRIMARY'")
+	if err != nil {
+		return fmt.Errorf("get table %s primary key: %w", table.Name, err)
+	}
+
+	defer rows.Close()
+
+	var columns []string
+
+	for rows.Next() {
+		record := make(map[string]any)
+		if err = rows.MapScan(record); err != nil {
+			return fmt.Errorf("get table %s primary key: %w", table.Name, err)
+		}
+
+		columns = append(columns, string(record["Column_name"].([]uint8)))
+	}
+
+	if err = rows.Err(); err != nil {
+		return fmt.Errorf("get table %s primary key: %w", table.Name, err)
+	}
+
+	if len(columns) == 0 {
+		return nil
+	}
+
+	table.PrimaryKey = &PrimaryKey{
+		Columns: columns,
+		table:   table,
+	}
+
+	return nil
 }

@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jmoiron/sqlx"
-
 	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
 	"github.com/cyhalothrin/dumper/internal/query"
@@ -18,13 +16,16 @@ func Init(ctx context.Context) error {
 }
 
 func Dump(ctx context.Context) error {
-	d := &dumper{}
+	d := &dumper{
+		selectedRecords: make(map[string]map[string]bool),
+	}
 
 	return d.do(ctx)
 }
 
 type dumper struct {
-	sourceDB *sqlx.DB
+	// selectedRecords выбранные записи по таблицам чтобы не уйти в бесконечный цикл из-за внешних ключей
+	selectedRecords map[string]map[string]bool
 }
 
 func (d *dumper) do(ctx context.Context) (err error) {
@@ -47,18 +48,21 @@ func (d *dumper) dumpTables(ctx context.Context) error {
 
 func (d *dumper) dumpTable(ctx context.Context, tableConf config.TableConfig) error {
 	selectQuery := query.Select(tableConf.Name).InSubQuery(tableConf.SelectQuery).Limit(tableConf.Limit)
-	table := schema.GetTable(tableConf.Name)
-
-	if tableConf.SelectColumnsMode == config.SelectColumnsModeNotNull {
-		columns, err := table.GetNotNullColumns(ctx)
-		if err != nil {
-			return err
-		}
-
-		selectQuery.Columns(columns)
+	table, err := schema.GetTable(ctx, tableConf.Name)
+	if err != nil {
+		return err
 	}
 
+	return d.selectRecords(ctx, table, selectQuery)
+}
+
+func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQuery *query.SelectBuilder) error {
 	columns, records, err := selectQuery.Exec(ctx)
+	if err != nil {
+		return err
+	}
+
+	records, err = d.filterRecords(table, records)
 	if err != nil {
 		return err
 	}
@@ -67,9 +71,60 @@ func (d *dumper) dumpTable(ctx context.Context, tableConf config.TableConfig) er
 		return nil
 	}
 
+	for _, columnName := range columns {
+		fk := table.ForeignKey(columnName)
+		if fk == nil {
+			continue
+		}
+
+		var keys [][]any
+
+		for _, record := range records {
+			var tuple []any
+
+			for _, fkColumn := range fk.Columns {
+				tuple = append(tuple, record[fkColumn])
+			}
+
+			keys = append(keys, tuple)
+		}
+
+		referencedTable, err := schema.GetTable(ctx, fk.ReferencedTableName)
+		if err != nil {
+			return err
+		}
+
+		err = d.selectRecords(ctx, referencedTable, query.Select(fk.ReferencedTableName).WhereIn(fk.ReferencedColumns, keys))
+		if err != nil {
+			return err
+		}
+	}
+
 	d.printInsertStatement(table, columns, records)
 
 	return nil
+}
+
+func (d *dumper) filterRecords(table *schema.Table, records []map[string]any) ([]map[string]any, error) {
+	if d.selectedRecords[table.Name] == nil {
+		d.selectedRecords[table.Name] = make(map[string]bool)
+	}
+
+	var index int
+
+	for _, record := range records {
+		pkVal, err := table.PrimaryKey.Format(record)
+		if err != nil {
+			return nil, err
+		}
+
+		if !d.selectedRecords[table.Name][pkVal] {
+			d.selectedRecords[table.Name][pkVal] = true
+			index++
+		}
+	}
+
+	return records[:index], nil
 }
 
 func (*dumper) printInsertStatement(table *schema.Table, columns []string, records []map[string]any) {
@@ -92,4 +147,6 @@ func (*dumper) printInsertStatement(table *schema.Table, columns []string, recor
 
 		fmt.Print(")")
 	}
+
+	fmt.Println(";")
 }

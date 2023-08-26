@@ -14,6 +14,7 @@ type SelectBuilder struct {
 	selectColumns []string
 	inSubQuery    string
 	selectLimit   int
+	in            map[string]*whereIn
 }
 
 func Select(tableName string) *SelectBuilder {
@@ -45,15 +46,54 @@ func (s *SelectBuilder) Exec(ctx context.Context) ([]string, []map[string]any, e
 
 	query += " FROM " + s.tableName
 
+	var args []any
+
 	if s.inSubQuery != "" {
 		query += " WHERE id IN (" + s.inSubQuery + ")"
+	} else if len(s.in) > 0 {
+		query += " WHERE "
+
+		var concatAnd bool
+
+		for _, in := range s.in {
+			if len(in.values) == 0 {
+				continue
+			}
+
+			if concatAnd {
+				query += " AND "
+			}
+
+			concatAnd = true
+			query += strings.Join(in.columns, ",") + " IN ("
+
+			for j, vals := range in.values {
+				if j > 0 {
+					query += ","
+				}
+
+				for i, val := range vals {
+					if i > 0 {
+						query += ",?"
+					} else {
+						query += "(?"
+					}
+
+					args = append(args, val)
+				}
+
+				query += ")"
+			}
+
+			query += ")"
+		}
 	}
 
 	if s.selectLimit > 0 {
 		query += " LIMIT " + strconv.Itoa(s.selectLimit)
 	}
 
-	rows, err := db.SourceDB.QueryxContext(ctx, query)
+	rows, err := db.SourceDB.QueryxContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -81,10 +121,12 @@ func (s *SelectBuilder) Exec(ctx context.Context) ([]string, []map[string]any, e
 	if len(s.selectColumns) > 0 {
 		columns = s.selectColumns
 	} else {
-		columns, err = schema.GetTable(s.tableName).ColumnNames(ctx)
+		table, err := schema.GetTable(ctx, s.tableName)
 		if err != nil {
 			return nil, nil, err
 		}
+
+		columns = table.Columns()
 	}
 
 	return columns, records, nil
@@ -94,4 +136,22 @@ func (s *SelectBuilder) Limit(limit int) *SelectBuilder {
 	s.selectLimit = limit
 
 	return s
+}
+
+func (s *SelectBuilder) WhereIn(columns []string, keys [][]any) *SelectBuilder {
+	if s.in == nil {
+		s.in = make(map[string]*whereIn)
+	}
+
+	s.in[strings.Join(columns, ",")] = &whereIn{
+		columns: columns,
+		values:  keys,
+	}
+
+	return s
+}
+
+type whereIn struct {
+	columns []string
+	values  [][]any
 }
