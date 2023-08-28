@@ -1,5 +1,7 @@
 package schema
 
+import "slices"
+
 type PrimaryKey struct {
 	table   *Table
 	Columns []string
@@ -17,4 +19,8 @@ func (k PrimaryKey) Format(record map[string]any) (string, error) {
 	}
 
 	return pkVal, nil
+}
+
+func (k PrimaryKey) Contains(name string) bool {
+	return slices.Contains(k.Columns, name)
 }

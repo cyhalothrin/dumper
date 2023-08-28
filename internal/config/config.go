@@ -7,9 +7,20 @@ func init() {
 }
 
 type DumperConfig struct {
-	SourceDB DBConfig      `mapstructure:"source_db"`
-	Tables   []TableConfig `mapstructure:"tables"`
-	DumpFile string        `mapstructure:"dump_file"`
+	SourceDB   DBConfig               `mapstructure:"source_db"`
+	TablesList []TableConfig          `mapstructure:"tables"`
+	Tables     map[string]TableConfig `mapstructure:"-"`
+	DumpFile   string                 `mapstructure:"dump_file"`
+}
+
+func Normalize() {
+	Config.Tables = make(map[string]TableConfig)
+
+	for _, tableConf := range Config.TablesList {
+		Config.Tables[tableConf.Name] = tableConf
+	}
+
+	Config.TablesList = nil
 }
 
 type DBConfig struct {
@@ -23,8 +34,8 @@ type TableConfig struct {
 	SelectQuery       string            `mapstructure:"select_query"`
 	Limit             int               `mapstructure:"limit"`
 	SelectColumnsMode SelectColumnsMode `mapstructure:"select_mode"`
-	// AllowColumns      []string          `mapstructure:"allow_columns"`
-	// IgnoreColumns     []string          `mapstructure:"ignore_columns"`
+	AllowColumns      []string          `mapstructure:"allow_columns"`
+	IgnoreColumns     []string          `mapstructure:"ignore_columns"`
 }
 
 type SelectColumnsMode string

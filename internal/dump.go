@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 
+	"slices"
+
 	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
 	"github.com/cyhalothrin/dumper/internal/query"
@@ -12,6 +14,8 @@ import (
 )
 
 func Init(ctx context.Context) error {
+	config.Normalize()
+
 	return db.Connect(ctx)
 }
 
@@ -38,8 +42,10 @@ func (d *dumper) do(ctx context.Context) (err error) {
 
 func (d *dumper) dumpTables(ctx context.Context) error {
 	for _, tableConf := range config.Config.Tables {
-		if err := d.dumpTable(ctx, tableConf); err != nil {
-			return err
+		if tableConf.SelectQuery != "" {
+			if err := d.dumpTable(ctx, tableConf); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -57,6 +63,13 @@ func (d *dumper) dumpTable(ctx context.Context, tableConf config.TableConfig) er
 }
 
 func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQuery *query.SelectBuilder) error {
+	tableConfig, ok := d.getTableConfig(table.Name)
+	if !ok {
+		return nil
+	}
+
+	selectQuery.Columns(d.getSelectColumnsFor(table, tableConfig))
+
 	columns, records, err := selectQuery.Exec(ctx)
 	if err != nil {
 		return err
@@ -94,7 +107,10 @@ func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQ
 			return err
 		}
 
-		err = d.selectRecords(ctx, referencedTable, query.Select(fk.ReferencedTableName).WhereIn(fk.ReferencedColumns, keys))
+		fkSelectQuery := query.Select(fk.ReferencedTableName).WhereIn(fk.ReferencedColumns, keys)
+
+		// TODO: remove already selected keys
+		err = d.selectRecords(ctx, referencedTable, fkSelectQuery)
 		if err != nil {
 			return err
 		}
@@ -103,6 +119,46 @@ func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQ
 	d.printInsertStatement(table, columns, records)
 
 	return nil
+}
+
+func (*dumper) getSelectColumnsFor(table *schema.Table, tableConfig config.TableConfig) []string {
+	if len(tableConfig.AllowColumns) == 0 && len(tableConfig.IgnoreColumns) == 0 {
+		return nil
+	}
+
+	tableColumns := table.Columns()
+
+	var columns []string
+
+	if len(tableConfig.AllowColumns) > 0 {
+		columns = make([]string, len(tableConfig.AllowColumns))
+		copy(columns, tableConfig.AllowColumns)
+
+		for _, colName := range tableColumns {
+			if !slices.Contains(tableConfig.AllowColumns, colName) &&
+				(table.ForeignKey(colName) != nil || table.PrimaryKey.Contains(colName)) {
+				columns = append(columns, colName)
+			}
+		}
+	} else {
+		columns = tableColumns
+	}
+
+	if len(tableConfig.IgnoreColumns) > 0 {
+		for _, colName := range tableConfig.IgnoreColumns {
+			if table.ForeignKey(colName) != nil || table.PrimaryKey.Contains(colName) {
+				continue
+			}
+
+			if i := slices.Index(columns, colName); i != -1 {
+				columns = slices.Delete(columns, i, i+1)
+			}
+		}
+	}
+
+	table.SortColumns(columns)
+
+	return columns
 }
 
 func (d *dumper) filterRecords(table *schema.Table, records []map[string]any) ([]map[string]any, error) {
@@ -149,4 +205,10 @@ func (*dumper) printInsertStatement(table *schema.Table, columns []string, recor
 	}
 
 	fmt.Println(";")
+}
+
+func (d *dumper) getTableConfig(name string) (config.TableConfig, bool) {
+	tableConf, ok := config.Config.Tables[name]
+
+	return tableConf, ok
 }

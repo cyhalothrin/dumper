@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/cyhalothrin/dumper/internal/db"
@@ -66,6 +67,18 @@ func (t *Table) ForeignKey(columnName string) *ForeignKey {
 	}
 
 	return nil
+}
+
+func (t *Table) SortColumns(columns []string) {
+	colPositions := make(map[string]int, len(columns))
+
+	for i, col := range columns {
+		colPositions[col] = i
+	}
+
+	sort.Slice(columns, func(i, j int) bool {
+		return colPositions[columns[i]] < colPositions[columns[j]]
+	})
 }
 
 func describeTable(ctx context.Context, name string) (*Table, error) {
