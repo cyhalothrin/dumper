@@ -81,6 +81,13 @@ func (t *Table) SortColumns(columns []string) {
 	})
 }
 
+func (t *Table) ForeignKeys() []*ForeignKey {
+	fks := make([]*ForeignKey, len(t.foreignKeys))
+	copy(fks, t.foreignKeys)
+
+	return fks
+}
+
 func describeTable(ctx context.Context, name string) (*Table, error) {
 	t := &Table{
 		Name: name,
@@ -127,6 +134,7 @@ func describeColumns(ctx context.Context, table *Table) error {
 			Name:     columnDesc.Field,
 			Nullable: columnDesc.Null == "YES",
 			dbType:   columnDesc.Type,
+			Default:  columnDesc.Default,
 		}
 	}
 

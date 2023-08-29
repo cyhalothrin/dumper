@@ -1,6 +1,7 @@
 package schema
 
 import (
+	"database/sql"
 	"fmt"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ type Column struct {
 	Name     string
 	Nullable bool
 	dbType   string
+	Default  sql.NullString
 }
 
 func (c Column) Format(val any) string {
@@ -37,11 +39,27 @@ func (c Column) Format(val any) string {
 
 func (c Column) formatBytes(val []uint8) string {
 	switch {
-	case c.isInt():
+	case c.isNumeric():
 		return string(val)
 	default:
 		return fmt.Sprintf("'%s'", string(val))
 	}
+}
+
+func (c Column) DefaultValue() string {
+	if c.Default.Valid {
+		return c.formatBytes([]uint8(c.Default.String))
+	}
+
+	if c.Nullable {
+		return "NULL"
+	}
+
+	if c.isNumeric() {
+		return "0"
+	}
+
+	return "''"
 }
 
 // int(11)
@@ -50,6 +68,6 @@ func (c Column) formatBytes(val []uint8) string {
 // datetime
 // timestamp
 
-func (c Column) isInt() bool {
+func (c Column) isNumeric() bool {
 	return strings.HasPrefix(c.dbType, "int") || strings.HasPrefix(c.dbType, "tinyint")
 }

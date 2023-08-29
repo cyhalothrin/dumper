@@ -9,9 +9,14 @@ import (
 
 	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
+	"github.com/cyhalothrin/dumper/internal/faker"
 	"github.com/cyhalothrin/dumper/internal/query"
 	"github.com/cyhalothrin/dumper/internal/schema"
 )
+
+// TODO: FK and not included tables
+// TODO: FK adn ignored columns
+// TODO: faker
 
 func Init(ctx context.Context) error {
 	config.Normalize()
@@ -54,6 +59,7 @@ func (d *dumper) dumpTables(ctx context.Context) error {
 
 func (d *dumper) dumpTable(ctx context.Context, tableConf config.TableConfig) error {
 	selectQuery := query.Select(tableConf.Name).InSubQuery(tableConf.SelectQuery).Limit(tableConf.Limit)
+
 	table, err := schema.GetTable(ctx, tableConf.Name)
 	if err != nil {
 		return err
@@ -70,7 +76,7 @@ func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQ
 
 	selectQuery.Columns(d.getSelectColumnsFor(table, tableConfig))
 
-	columns, records, err := selectQuery.Exec(ctx)
+	_, records, err := selectQuery.Exec(ctx)
 	if err != nil {
 		return err
 	}
@@ -84,41 +90,63 @@ func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQ
 		return nil
 	}
 
-	for _, columnName := range columns {
-		fk := table.ForeignKey(columnName)
-		if fk == nil {
-			continue
-		}
+	err = d.selectRelatedRecords(ctx, table, records)
+	if err != nil {
+		return err
+	}
 
-		var keys [][]any
+	d.printInsertStatement(table, tableConfig, records)
 
-		for _, record := range records {
-			var tuple []any
+	return nil
+}
 
-			for _, fkColumn := range fk.Columns {
-				tuple = append(tuple, record[fkColumn])
-			}
-
-			keys = append(keys, tuple)
-		}
+func (d *dumper) selectRelatedRecords(ctx context.Context, table *schema.Table, records []map[string]any) error {
+	for _, fk := range table.ForeignKeys() {
+		keys := d.extractFkValuesFromRecord(records, fk)
 
 		referencedTable, err := schema.GetTable(ctx, fk.ReferencedTableName)
 		if err != nil {
 			return err
 		}
 
+		keys = d.filterForeignKeys(referencedTable, keys)
+		if len(keys) == 0 {
+			continue
+		}
+
 		fkSelectQuery := query.Select(fk.ReferencedTableName).WhereIn(fk.ReferencedColumns, keys)
 
-		// TODO: remove already selected keys
-		err = d.selectRecords(ctx, referencedTable, fkSelectQuery)
-		if err != nil {
+		if err = d.selectRecords(ctx, referencedTable, fkSelectQuery); err != nil {
 			return err
 		}
 	}
 
-	d.printInsertStatement(table, columns, records)
-
 	return nil
+}
+
+func (d *dumper) extractFkValuesFromRecord(records []map[string]any, fk *schema.ForeignKey) [][]any {
+	keys := make([][]any, 0, len(records))
+
+	for _, record := range records {
+		var tuple []any
+
+		for _, fkColumn := range fk.Columns {
+			fkVal := record[fkColumn]
+			if fkVal == nil {
+				tuple = nil
+
+				break
+			}
+
+			tuple = append(tuple, fkVal)
+		}
+
+		if len(tuple) > 0 {
+			keys = append(keys, tuple)
+		}
+	}
+
+	return keys
 }
 
 func (*dumper) getSelectColumnsFor(table *schema.Table, tableConfig config.TableConfig) []string {
@@ -169,10 +197,7 @@ func (d *dumper) filterRecords(table *schema.Table, records []map[string]any) ([
 	var index int
 
 	for _, record := range records {
-		pkVal, err := table.PrimaryKey.Format(record)
-		if err != nil {
-			return nil, err
-		}
+		pkVal := table.PrimaryKey.FormatFromRecord(record)
 
 		if !d.selectedRecords[table.Name][pkVal] {
 			d.selectedRecords[table.Name][pkVal] = true
@@ -183,7 +208,31 @@ func (d *dumper) filterRecords(table *schema.Table, records []map[string]any) ([
 	return records[:index], nil
 }
 
-func (*dumper) printInsertStatement(table *schema.Table, columns []string, records []map[string]any) {
+func (d *dumper) filterForeignKeys(table *schema.Table, keys [][]any) [][]any {
+	if len(keys) == 0 {
+		return nil
+	}
+
+	if d.selectedRecords[table.Name] == nil {
+		d.selectedRecords[table.Name] = make(map[string]bool)
+	}
+
+	var index int
+
+	for _, key := range keys {
+		pkVal := table.PrimaryKey.Format(key)
+
+		if !d.selectedRecords[table.Name][pkVal] {
+			index++
+		}
+	}
+
+	return keys[:index]
+}
+
+func (*dumper) printInsertStatement(table *schema.Table, tableConfig config.TableConfig, records []map[string]any) {
+	columns := table.Columns()
+
 	fmt.Printf("INSERT INTO %s (%s) VALUES ", table.Name, strings.Join(columns, ", "))
 
 	for i, record := range records {
@@ -193,12 +242,18 @@ func (*dumper) printInsertStatement(table *schema.Table, columns []string, recor
 
 		fmt.Print("(")
 
-		for i, column := range columns {
-			if i > 0 {
+		for j, column := range columns {
+			if j > 0 {
 				fmt.Print(", ")
 			}
 
-			fmt.Print(table.Column(column).Format(record[column]))
+			if tableConfig.IsIgnoredColumn(column) {
+				fmt.Print(table.Column(column).DefaultValue())
+			} else if fakerConfig := tableConfig.UseFaker(column); fakerConfig != nil {
+				fmt.Print(faker.Format(fakerConfig))
+			} else {
+				fmt.Print(table.Column(column).Format(record[column]))
+			}
 		}
 
 		fmt.Print(")")
