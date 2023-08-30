@@ -81,6 +81,20 @@ func (t *Table) SortColumns(columns []string) {
 	})
 }
 
+func (t *Table) CreateTableStatement(ctx context.Context) (string, error) {
+	var (
+		statement string
+		tableName string
+	)
+
+	err := db.SourceDB.QueryRowxContext(ctx, "SHOW CREATE TABLE "+t.Name).Scan(&tableName, &statement)
+	if err != nil {
+		return "", fmt.Errorf("get table %s create statement: %w", t.Name, err)
+	}
+
+	return statement, nil
+}
+
 func (t *Table) ForeignKeys() []*ForeignKey {
 	fks := make([]*ForeignKey, len(t.foreignKeys))
 	copy(fks, t.foreignKeys)

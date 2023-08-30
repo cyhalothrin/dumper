@@ -12,7 +12,11 @@ type DumperConfig struct {
 	SourceDB   DBConfig               `mapstructure:"source_db"`
 	TablesList []TableConfig          `mapstructure:"tables"`
 	Tables     map[string]TableConfig `mapstructure:"-"`
-	DumpFile   string                 `mapstructure:"dump_file"`
+	Dump       DumpConfig             `mapstructure:"dump"`
+}
+
+type DumpConfig struct {
+	AddColumnName bool `mapstructure:"add_column_name"`
 }
 
 func Normalize() {
@@ -49,13 +53,12 @@ type FakerConfig struct {
 type TableConfig struct {
 	Name string `mapstructure:"name"`
 	// SelectQuery в выборке нужны только id записей, которые нужно перенести
-	SelectQuery       string                  `mapstructure:"select_query"`
-	Limit             int                     `mapstructure:"limit"`
-	SelectColumnsMode SelectColumnsMode       `mapstructure:"select_mode"`
-	AllowColumns      []string                `mapstructure:"allow_columns"`
-	IgnoreColumns     []string                `mapstructure:"ignore_columns"`
-	Faker             []*FakerConfig          `mapstructure:"faker"`
-	ColumnsFaker      map[string]*FakerConfig `mapstructure:"-"`
+	SelectQuery   string                  `mapstructure:"select_query"`
+	Limit         int                     `mapstructure:"limit"`
+	AllowColumns  []string                `mapstructure:"allow_columns"`
+	IgnoreColumns []string                `mapstructure:"ignore_columns"`
+	Faker         []*FakerConfig          `mapstructure:"faker"`
+	ColumnsFaker  map[string]*FakerConfig `mapstructure:"-"`
 }
 
 func (c TableConfig) IsIgnoredColumn(column string) bool {
@@ -65,10 +68,3 @@ func (c TableConfig) IsIgnoredColumn(column string) bool {
 func (c TableConfig) UseFaker(column string) *FakerConfig {
 	return c.ColumnsFaker[column]
 }
-
-type SelectColumnsMode string
-
-const (
-	SelectColumnsModeAll     SelectColumnsMode = "all"
-	SelectColumnsModeNotNull SelectColumnsMode = "not_null"
-)

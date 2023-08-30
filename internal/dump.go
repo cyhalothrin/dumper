@@ -1,8 +1,12 @@
 package internal
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"regexp"
 	"strings"
 
 	"slices"
@@ -16,7 +20,9 @@ import (
 
 // TODO: FK and not included tables
 // TODO: FK adn ignored columns
-// TODO: faker
+// TODO: generate schema (config option)
+// TODO: add support for multiple select queries
+// TODO: add warning about not included but referenced tables
 
 func Init(ctx context.Context) error {
 	config.Normalize()
@@ -26,7 +32,8 @@ func Init(ctx context.Context) error {
 
 func Dump(ctx context.Context) error {
 	d := &dumper{
-		selectedRecords: make(map[string]map[string]bool),
+		selectedRecords:     make(map[string]map[string]bool),
+		tableInsertsBuffers: make(map[string]io.ReadWriter),
 	}
 
 	return d.do(ctx)
@@ -34,7 +41,9 @@ func Dump(ctx context.Context) error {
 
 type dumper struct {
 	// selectedRecords выбранные записи по таблицам чтобы не уйти в бесконечный цикл из-за внешних ключей
-	selectedRecords map[string]map[string]bool
+	selectedRecords     map[string]map[string]bool
+	tableInsertsBuffers map[string]io.ReadWriter
+	tablesInsertOrder   []string
 }
 
 func (d *dumper) do(ctx context.Context) (err error) {
@@ -54,7 +63,7 @@ func (d *dumper) dumpTables(ctx context.Context) error {
 		}
 	}
 
-	return nil
+	return d.printDump(ctx)
 }
 
 func (d *dumper) dumpTable(ctx context.Context, tableConf config.TableConfig) error {
@@ -230,40 +239,111 @@ func (d *dumper) filterForeignKeys(table *schema.Table, keys [][]any) [][]any {
 	return keys[:index]
 }
 
-func (*dumper) printInsertStatement(table *schema.Table, tableConfig config.TableConfig, records []map[string]any) {
+func (d *dumper) printInsertStatement(table *schema.Table, tableConfig config.TableConfig, records []map[string]any) {
 	columns := table.Columns()
+	w := d.tableInsertsBuffers[table.Name]
+	d.tablesInsertOrder = append(d.tablesInsertOrder, table.Name)
 
-	fmt.Printf("INSERT INTO %s (%s) VALUES ", table.Name, strings.Join(columns, ", "))
+	if w == nil {
+		w = bytes.NewBuffer(nil)
+		d.tableInsertsBuffers[table.Name] = w
+	} else {
+		_, _ = w.Write([]byte("\n"))
+	}
+
+	_, _ = fmt.Fprintf(w, "INSERT INTO %s (%s) VALUES \n\t", table.Name, strings.Join(columns, ", "))
 
 	for i, record := range records {
 		if i > 0 {
-			fmt.Print(",\n\t")
+			_, _ = fmt.Fprintf(w, ",\n\t")
 		}
 
-		fmt.Print("(")
+		_, _ = fmt.Fprintf(w, "(")
 
 		for j, column := range columns {
 			if j > 0 {
-				fmt.Print(", ")
+				_, _ = fmt.Fprintf(w, ", ")
+			}
+
+			if config.Config.Dump.AddColumnName {
+				_, _ = fmt.Fprintf(w, "\n\t\t# %s\n\t\t", column)
 			}
 
 			if tableConfig.IsIgnoredColumn(column) {
-				fmt.Print(table.Column(column).DefaultValue())
+				_, _ = fmt.Fprintf(w, table.Column(column).DefaultValue())
 			} else if fakerConfig := tableConfig.UseFaker(column); fakerConfig != nil {
-				fmt.Print(faker.Format(fakerConfig))
+				_, _ = fmt.Fprintf(w, faker.Format(fakerConfig))
 			} else {
-				fmt.Print(table.Column(column).Format(record[column]))
+				_, _ = fmt.Fprintf(w, table.Column(column).Format(record[column]))
 			}
 		}
 
-		fmt.Print(")")
+		_, _ = fmt.Fprintf(w, ")")
 	}
 
-	fmt.Println(";")
+	_, _ = fmt.Fprintf(w, ";")
+}
+
+func (d *dumper) printDump(ctx context.Context) error {
+	var out io.Writer = os.Stdout
+
+	for tableName := range config.Config.Tables {
+		err := d.printTableCreate(ctx, tableName, out)
+		if err != nil {
+			return err
+		}
+	}
+
+	for _, tableName := range d.tablesInsertOrder {
+		if reader := d.tableInsertsBuffers[tableName]; reader != nil {
+			_, _ = io.Copy(out, reader)
+		}
+
+		_, _ = fmt.Fprint(out, "\n\n")
+
+		delete(d.tableInsertsBuffers, tableName)
+	}
+
+	return nil
 }
 
 func (d *dumper) getTableConfig(name string) (config.TableConfig, bool) {
 	tableConf, ok := config.Config.Tables[name]
 
 	return tableConf, ok
+}
+
+func (d *dumper) printTableCreate(ctx context.Context, tableName string, w io.Writer) error {
+	table, err := schema.GetTable(ctx, tableName)
+	if err != nil {
+		return err
+	}
+
+	createStatement, err := table.CreateTableStatement(ctx)
+	if err != nil {
+		return err
+	}
+
+	for _, st := range strings.Split(createStatement, "\n") {
+		if !d.isFKDefinitionForNotIncludedTable(st) {
+			_, _ = fmt.Fprintln(w, st)
+		}
+	}
+
+	_, _ = fmt.Fprintln(w)
+
+	return nil
+}
+
+func (d *dumper) isFKDefinitionForNotIncludedTable(st string) bool {
+	re := regexp.MustCompile("REFERENCES `([^`]+)`")
+	match := re.FindStringSubmatch(st)
+
+	if len(match) < 2 {
+		return false
+	}
+
+	_, ok := config.Config.Tables[match[1]]
+
+	return !ok
 }
