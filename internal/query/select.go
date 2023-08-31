@@ -2,6 +2,7 @@ package query
 
 import (
 	"context"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -49,7 +50,29 @@ func (s *SelectBuilder) Exec(ctx context.Context) ([]string, []map[string]any, e
 	var args []any
 
 	if s.inSubQuery != "" {
-		query += " WHERE id IN (" + s.inSubQuery + ")"
+		if strings.Contains(strings.ToLower(s.inSubQuery), "limit") {
+			query += " WHERE id IN ("
+
+			// MySQL disallows LIMIT in subquery
+			ids, err := s.selectIDs(ctx)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			for i := range ids {
+				if i > 0 {
+					query += ","
+				}
+
+				query += "?"
+			}
+
+			query += ")"
+
+			args = append(args, ids...)
+		} else {
+			query += " WHERE id IN (" + s.inSubQuery + ")"
+		}
 	} else if len(s.in) > 0 {
 		query += " WHERE "
 
@@ -130,6 +153,33 @@ func (s *SelectBuilder) Exec(ctx context.Context) ([]string, []map[string]any, e
 	}
 
 	return columns, records, nil
+}
+
+func (s *SelectBuilder) selectIDs(ctx context.Context) ([]any, error) {
+	var ids []any
+
+	rows, err := db.SourceDB.QueryxContext(ctx, s.inSubQuery)
+	if err != nil {
+		return nil, fmt.Errorf("failed to select IDs from subquery: %w", err)
+	}
+
+	defer rows.Close()
+
+	for rows.Next() {
+		var id any
+
+		if err = rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("failed to scan ID from subquery: %w", err)
+		}
+
+		ids = append(ids, id)
+	}
+
+	if err = rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to select IDs from subquery: %w", err)
+	}
+
+	return ids, nil
 }
 
 func (s *SelectBuilder) Limit(limit int) *SelectBuilder {
