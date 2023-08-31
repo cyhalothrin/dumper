@@ -18,9 +18,7 @@ import (
 	"github.com/cyhalothrin/dumper/internal/schema"
 )
 
-// TODO: FK and not included tables
-// TODO: FK adn ignored columns
-// TODO: add warning about not included but referenced tables
+// TODO: add warning comment about not included but referenced tables
 // TODO: fix subquery to use limit https://stackoverflow.com/questions/12810346/alternative-to-using-limit-keyword-in-a-subquery-in-mysql
 
 func Init(ctx context.Context) error {
@@ -371,19 +369,40 @@ func (d *dumper) printTableCreate(ctx context.Context, tableName string, w io.Wr
 		return err
 	}
 
+	buf := bytes.NewBuffer(nil)
+
+	var deleted bool
+
 	for i, st := range strings.Split(createStatement, "\n") {
-		if !d.isFKDefinitionForNotIncludedTable(st) {
-			if i > 0 {
-				_, _ = fmt.Fprint(w, "\n")
+		if strings.HasPrefix(st, ")") { // End of create statement
+			if deleted {
+				// Remove trailing comma
+				buf.Truncate(buf.Len() - 1)
 			}
 
-			_, _ = fmt.Fprint(w, st)
+			d.writef(buf, "\n")
+			d.writef(buf, st)
+			d.writef(buf, ";\n\n")
+
+			break
+		}
+
+		if !d.isFKDefinitionForNotIncludedTable(st) {
+			if i > 0 {
+				d.writef(buf, "\n")
+			}
+
+			d.writef(buf, st)
+
+			deleted = false
+		} else {
+			deleted = true
 		}
 	}
 
-	_, _ = fmt.Fprintf(w, ";\n\n")
+	_, err = io.Copy(w, buf)
 
-	return nil
+	return err
 }
 
 func (d *dumper) isFKDefinitionForNotIncludedTable(st string) bool {
