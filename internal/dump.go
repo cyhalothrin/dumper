@@ -7,8 +7,9 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"slices"
 	"strings"
+
+	"slices"
 
 	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
@@ -21,7 +22,6 @@ import (
 // TODO: FK adn ignored columns
 // TODO: add warning about not included but referenced tables
 // TODO: fix subquery to use limit https://stackoverflow.com/questions/12810346/alternative-to-using-limit-keyword-in-a-subquery-in-mysql
-// TODO: add disabling fk checks if there is references cycle
 
 func Init(ctx context.Context) error {
 	config.Normalize()
@@ -44,6 +44,7 @@ type dumper struct {
 	tableInsertsBuffers map[string]io.ReadWriter
 	tablesInsertOrder   []string
 	writeErr            error
+	disableFKChecks     bool
 }
 
 func (d *dumper) do(ctx context.Context) (err error) {
@@ -117,6 +118,10 @@ func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQ
 }
 
 func (d *dumper) selectRelatedRecords(ctx context.Context, table *schema.Table, records []map[string]any) error {
+	if d.selectedRecords[table.Name] != nil {
+		d.disableFKChecks = true
+	}
+
 	for _, fk := range table.ForeignKeys() {
 		keys := d.extractFkValuesFromRecord(records, fk)
 
@@ -324,6 +329,10 @@ func (d *dumper) writef(w io.Writer, format string, args ...any) {
 
 func (d *dumper) printDump(ctx context.Context) error {
 	var out io.Writer = os.Stdout
+
+	if d.disableFKChecks {
+		d.writef(out, "# Disable FK checks because references cycle detected\nSET FOREIGN_KEY_CHECKS = 0;\n\n")
+	}
 
 	for tableName := range config.Config.Tables {
 		err := d.printTableCreate(ctx, tableName, out)
