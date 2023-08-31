@@ -7,9 +7,8 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"strings"
-
 	"slices"
+	"strings"
 
 	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
@@ -20,7 +19,6 @@ import (
 
 // TODO: FK and not included tables
 // TODO: FK adn ignored columns
-// TODO: generate schema (config option)
 // TODO: add support for multiple select queries
 // TODO: add warning about not included but referenced tables
 
@@ -56,7 +54,7 @@ func (d *dumper) do(ctx context.Context) (err error) {
 
 func (d *dumper) dumpTables(ctx context.Context) error {
 	for _, tableConf := range config.Config.Tables {
-		if tableConf.SelectQuery != "" {
+		if len(tableConf.SelectQuery) > 0 {
 			if err := d.dumpTable(ctx, tableConf); err != nil {
 				return err
 			}
@@ -67,14 +65,21 @@ func (d *dumper) dumpTables(ctx context.Context) error {
 }
 
 func (d *dumper) dumpTable(ctx context.Context, tableConf config.TableConfig) error {
-	selectQuery := query.Select(tableConf.Name).InSubQuery(tableConf.SelectQuery).Limit(tableConf.Limit)
+	for _, selectPKs := range tableConf.SelectQuery {
+		selectQuery := query.Select(tableConf.Name).InSubQuery(selectPKs).Limit(tableConf.Limit)
 
-	table, err := schema.GetTable(ctx, tableConf.Name)
-	if err != nil {
-		return err
+		table, err := schema.GetTable(ctx, tableConf.Name)
+		if err != nil {
+			return err
+		}
+
+		err = d.selectRecords(ctx, table, selectQuery)
+		if err != nil {
+			return err
+		}
 	}
 
-	return d.selectRecords(ctx, table, selectQuery)
+	return nil
 }
 
 func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQuery *query.SelectBuilder) error {

@@ -53,7 +53,7 @@ type FakerConfig struct {
 type TableConfig struct {
 	Name string `mapstructure:"name"`
 	// SelectQuery в выборке нужны только id записей, которые нужно перенести
-	SelectQuery   string                  `mapstructure:"select_query"`
+	SelectQuery   []string                `mapstructure:"select_query"`
 	Limit         int                     `mapstructure:"limit"`
 	AllowColumns  []string                `mapstructure:"allow_columns"`
 	IgnoreColumns []string                `mapstructure:"ignore_columns"`
