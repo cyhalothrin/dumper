@@ -19,8 +19,9 @@ import (
 
 // TODO: FK and not included tables
 // TODO: FK adn ignored columns
-// TODO: add support for multiple select queries
 // TODO: add warning about not included but referenced tables
+// TODO: fix subquery to use limit https://stackoverflow.com/questions/12810346/alternative-to-using-limit-keyword-in-a-subquery-in-mysql
+// TODO: add disabling fk checks if there is references cycle
 
 func Init(ctx context.Context) error {
 	config.Normalize()
@@ -42,6 +43,7 @@ type dumper struct {
 	selectedRecords     map[string]map[string]bool
 	tableInsertsBuffers map[string]io.ReadWriter
 	tablesInsertOrder   []string
+	writeErr            error
 }
 
 func (d *dumper) do(ctx context.Context) (err error) {
@@ -49,7 +51,7 @@ func (d *dumper) do(ctx context.Context) (err error) {
 		return err
 	}
 
-	return nil
+	return d.writeErr
 }
 
 func (d *dumper) dumpTables(ctx context.Context) error {
@@ -277,7 +279,7 @@ func (d *dumper) printInsertStatement(table *schema.Table, tableConfig config.Ta
 			if tableConfig.IsIgnoredColumn(column) {
 				_, _ = fmt.Fprintf(w, table.Column(column).DefaultValue())
 			} else if fakerConfig := tableConfig.UseFaker(column); fakerConfig != nil {
-				_, _ = fmt.Fprintf(w, faker.Format(fakerConfig))
+				_, _ = fmt.Fprintf(w, table.Column(column).Format(faker.Format(fakerConfig)))
 			} else {
 				_, _ = fmt.Fprintf(w, table.Column(column).Format(record[column]))
 			}
@@ -286,7 +288,38 @@ func (d *dumper) printInsertStatement(table *schema.Table, tableConfig config.Ta
 		_, _ = fmt.Fprintf(w, ")")
 	}
 
+	d.printOnDuplicateKeyUpdateStatement(w, table, tableConfig)
+
 	_, _ = fmt.Fprintf(w, ";")
+}
+
+func (d *dumper) printOnDuplicateKeyUpdateStatement(w io.Writer, table *schema.Table, tableConfig config.TableConfig) {
+	d.writef(w, " ON DUPLICATE KEY UPDATE ")
+
+	var colNum int
+
+	for _, column := range table.Columns() {
+		if !tableConfig.IsIgnoredColumn(column) {
+			if colNum > 0 {
+				d.writef(w, ",")
+			}
+
+			d.writef(w, "%s = VALUES(%s)", column, column)
+
+			colNum++
+		}
+	}
+}
+
+func (d *dumper) writef(w io.Writer, format string, args ...any) {
+	if d.writeErr != nil {
+		return
+	}
+
+	_, err := fmt.Fprintf(w, format, args...)
+	if err != nil {
+		d.writeErr = err
+	}
 }
 
 func (d *dumper) printDump(ctx context.Context) error {
@@ -329,13 +362,17 @@ func (d *dumper) printTableCreate(ctx context.Context, tableName string, w io.Wr
 		return err
 	}
 
-	for _, st := range strings.Split(createStatement, "\n") {
+	for i, st := range strings.Split(createStatement, "\n") {
 		if !d.isFKDefinitionForNotIncludedTable(st) {
-			_, _ = fmt.Fprintln(w, st)
+			if i > 0 {
+				_, _ = fmt.Fprint(w, "\n")
+			}
+
+			_, _ = fmt.Fprint(w, st)
 		}
 	}
 
-	_, _ = fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, ";\n\n")
 
 	return nil
 }

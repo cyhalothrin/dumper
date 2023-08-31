@@ -26,6 +26,8 @@ func (c Column) Format(val any) string {
 	switch t := val.(type) {
 	case []uint8:
 		return c.formatBytes(t)
+	case string:
+		return c.formatBytes([]byte(t))
 	case int64:
 		return strconv.FormatInt(t, 10)
 	case float32:
