@@ -44,7 +44,7 @@ func (c Column) formatBytes(val []uint8) string {
 	case c.isNumeric():
 		return string(val)
 	default:
-		return fmt.Sprintf("'%s'", string(val))
+		return fmt.Sprintf("'%s'", strings.ReplaceAll(string(val), "'", "\\'"))
 	}
 }
 

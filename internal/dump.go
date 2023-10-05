@@ -19,7 +19,7 @@ import (
 )
 
 // TODO: add warning comment about not included but referenced tables
-// TODO: fix subquery to use limit https://stackoverflow.com/questions/12810346/alternative-to-using-limit-keyword-in-a-subquery-in-mysql
+// TODO: add support for not ID primary key name
 
 func Init(ctx context.Context) error {
 	config.Normalize()
@@ -280,10 +280,13 @@ func (d *dumper) printInsertStatement(table *schema.Table, tableConfig config.Ta
 			}
 
 			if tableConfig.IsIgnoredColumn(column) {
+				// Print default value if column is ignored and it is required
 				_, _ = fmt.Fprintf(w, table.Column(column).DefaultValue())
 			} else if fakerConfig := tableConfig.UseFaker(column); fakerConfig != nil {
+				// Use fakers
 				_, _ = fmt.Fprintf(w, table.Column(column).Format(faker.Format(fakerConfig)))
 			} else {
+				// Print column value
 				_, _ = fmt.Fprintf(w, table.Column(column).Format(record[column]))
 			}
 		}
