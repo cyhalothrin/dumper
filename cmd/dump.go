@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/cyhalothrin/dumper/internal"
+	"github.com/cyhalothrin/dumper/internal/config"
 )
 
 // dumpCmd represents the dump command
@@ -46,4 +47,6 @@ func init() {
 	// Cobra supports local flags which will only run when this command
 	// is called directly, e.g.:
 	// dumpCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+
+	dumpCmd.Flags().StringVarP(&config.Config.Dump.Out, "out", "o", "", "Output dump file")
 }

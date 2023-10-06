@@ -18,9 +18,6 @@ import (
 	"github.com/cyhalothrin/dumper/internal/schema"
 )
 
-// TODO: add warning comment about not included but referenced tables
-// TODO: add support for not ID primary key name
-
 func Init(ctx context.Context) error {
 	config.Normalize()
 
@@ -28,9 +25,25 @@ func Init(ctx context.Context) error {
 }
 
 func Dump(ctx context.Context) error {
+	var out io.Writer = os.Stdout
+
+	if config.Config.Dump.Out != "" {
+		file, err := os.Create(config.Config.Dump.Out)
+		if err != nil {
+			return fmt.Errorf("failed to create dump file: %w", err)
+		}
+
+		defer func() {
+			_ = file.Close()
+		}()
+
+		out = file
+	}
+
 	d := &dumper{
 		selectedRecords:     make(map[string]map[string]bool),
 		tableInsertsBuffers: make(map[string]io.ReadWriter),
+		dumpTarget:          out,
 	}
 
 	return d.do(ctx)
@@ -43,6 +56,7 @@ type dumper struct {
 	tablesInsertOrder   []string
 	writeErr            error
 	disableFKChecks     bool
+	dumpTarget          io.Writer
 }
 
 func (d *dumper) do(ctx context.Context) (err error) {
@@ -329,14 +343,12 @@ func (d *dumper) writef(w io.Writer, format string, args ...any) {
 }
 
 func (d *dumper) printDump(ctx context.Context) error {
-	var out io.Writer = os.Stdout
-
 	if d.disableFKChecks {
-		d.writef(out, "# Disable FK checks because references cycle detected\nSET FOREIGN_KEY_CHECKS = 0;\n\n")
+		d.writef(d.dumpTarget, "# Disable FK checks because references cycle detected\nSET FOREIGN_KEY_CHECKS = 0;\n\n")
 	}
 
 	for tableName := range config.Config.Tables {
-		err := d.printTableCreate(ctx, tableName, out)
+		err := d.printTableCreate(ctx, tableName, d.dumpTarget)
 		if err != nil {
 			return err
 		}
@@ -344,10 +356,10 @@ func (d *dumper) printDump(ctx context.Context) error {
 
 	for _, tableName := range d.tablesInsertOrder {
 		if reader := d.tableInsertsBuffers[tableName]; reader != nil {
-			_, _ = io.Copy(out, reader)
+			_, _ = io.Copy(d.dumpTarget, reader)
 		}
 
-		_, _ = fmt.Fprint(out, "\n\n")
+		_, _ = fmt.Fprint(d.dumpTarget, "\n\n")
 
 		delete(d.tableInsertsBuffers, tableName)
 	}

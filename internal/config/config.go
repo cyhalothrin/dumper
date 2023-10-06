@@ -16,7 +16,8 @@ type DumperConfig struct {
 }
 
 type DumpConfig struct {
-	AddColumnName bool `mapstructure:"add_column_name"`
+	AddColumnName bool   `mapstructure:"add_column_name"`
+	Out           string `mapstructure:"-"`
 }
 
 func Normalize() {
