@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
 )
 
@@ -90,6 +91,10 @@ func (t *Table) CreateTableStatement(ctx context.Context) (string, error) {
 	err := db.SourceDB.QueryRowxContext(ctx, "SHOW CREATE TABLE "+t.Name).Scan(&tableName, &statement)
 	if err != nil {
 		return "", fmt.Errorf("get table %s create statement: %w", t.Name, err)
+	}
+
+	if config.Config.Dump.CreateTablesIfNotExist {
+		statement = strings.Replace(statement, "CREATE TABLE", "CREATE TABLE IF NOT EXISTS", 1)
 	}
 
 	return statement, nil
