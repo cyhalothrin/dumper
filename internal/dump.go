@@ -7,9 +7,8 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"strings"
-
 	"slices"
+	"strings"
 
 	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
@@ -347,10 +346,12 @@ func (d *dumper) printDump(ctx context.Context) error {
 		d.writef(d.dumpTarget, "# Disable FK checks because references cycle detected\nSET FOREIGN_KEY_CHECKS = 0;\n\n")
 	}
 
-	for tableName := range config.Config.Tables {
-		err := d.printTableCreate(ctx, tableName, d.dumpTarget)
-		if err != nil {
-			return err
+	if !config.Config.Dump.OnlyData {
+		for tableName := range config.Config.Tables {
+			err := d.printTableCreate(ctx, tableName, d.dumpTarget)
+			if err != nil {
+				return err
+			}
 		}
 	}
 
