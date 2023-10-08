@@ -47,11 +47,8 @@ type DBConfig struct {
 }
 
 type FakerConfig struct {
-	Columns  []string `mapstructure:"columns"`
-	Type     string   `mapstructure:"type"`
-	Pattern  string   `mapstructure:"pattern"`
-	NamePart string   `mapstructure:"part"`
-	Length   int      `mapstructure:"length"`
+	Columns []string `mapstructure:"columns"`
+	Value   string   `mapstructure:"value"`
 }
 
 type TableConfig struct {
