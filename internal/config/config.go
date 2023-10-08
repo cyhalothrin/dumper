@@ -20,6 +20,7 @@ type DumpConfig struct {
 	Out                    string `mapstructure:"-"`
 	OnlyData               bool   `mapstructure:"only_data"`
 	CreateTablesIfNotExist bool   `mapstructure:"create_tables_if_not_exist"`
+	InMemory               bool   `mapstructure:"in_memory"`
 }
 
 func Normalize() {

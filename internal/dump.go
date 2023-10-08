@@ -271,45 +271,45 @@ func (d *dumper) printInsertStatement(table *schema.Table, tableConfig config.Ta
 		w = bytes.NewBuffer(nil)
 		d.tableInsertsBuffers[table.Name] = w
 	} else {
-		_, _ = w.Write([]byte("\n"))
+		d.writef(w, "\n")
 	}
 
-	_, _ = fmt.Fprintf(w, "INSERT INTO %s (%s) VALUES \n\t", table.Name, strings.Join(columns, ", "))
+	d.writef(w, "INSERT INTO %s (%s) VALUES \n\t", table.Name, strings.Join(columns, ", "))
 
 	for i, record := range records {
 		if i > 0 {
-			_, _ = fmt.Fprintf(w, ",\n\t")
+			d.writef(w, ",\n\t")
 		}
 
-		_, _ = fmt.Fprintf(w, "(")
+		d.writef(w, "(")
 
 		for j, column := range columns {
 			if j > 0 {
-				_, _ = fmt.Fprintf(w, ", ")
+				d.writef(w, ", ")
 			}
 
 			if config.Config.Dump.AddColumnName {
-				_, _ = fmt.Fprintf(w, "\n\t\t# %s\n\t\t", column)
+				d.writef(w, "\n\t\t# %s\n\t\t", column)
 			}
 
 			if tableConfig.IsIgnoredColumn(column) {
 				// Print default value if column is ignored and it is required
-				_, _ = fmt.Fprintf(w, table.Column(column).DefaultValue())
+				d.writef(w, table.Column(column).DefaultValue())
 			} else if fakerConfig := tableConfig.UseFaker(column); fakerConfig != nil {
 				// Use fakers
-				_, _ = fmt.Fprintf(w, table.Column(column).Format(faker.Format(fakerConfig)))
+				d.writef(w, table.Column(column).Format(faker.Format(fakerConfig)))
 			} else {
 				// Print column value
-				_, _ = fmt.Fprintf(w, table.Column(column).Format(record[column]))
+				d.writef(w, table.Column(column).Format(record[column]))
 			}
 		}
 
-		_, _ = fmt.Fprintf(w, ")")
+		d.writef(w, ")")
 	}
 
 	d.printOnDuplicateKeyUpdateStatement(w, table, tableConfig)
 
-	_, _ = fmt.Fprintf(w, ";")
+	d.writef(w, ";")
 }
 
 func (d *dumper) printOnDuplicateKeyUpdateStatement(w io.Writer, table *schema.Table, tableConfig config.TableConfig) {
@@ -360,7 +360,7 @@ func (d *dumper) printDump(ctx context.Context) error {
 			_, _ = io.Copy(d.dumpTarget, reader)
 		}
 
-		_, _ = fmt.Fprint(d.dumpTarget, "\n\n")
+		d.writef(d.dumpTarget, "\n\n")
 
 		delete(d.tableInsertsBuffers, tableName)
 	}
