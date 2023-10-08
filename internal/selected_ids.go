@@ -6,7 +6,7 @@ import (
 	"github.com/akrylysov/pogreb"
 )
 
-const maxSelectedIDsInMem = 1
+const maxSelectedIDsInMem = 1000
 
 type selectedIDsStorage struct {
 	m          map[string]map[string]bool
