@@ -7,9 +7,8 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"strings"
-
 	"slices"
+	"strings"
 
 	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
@@ -41,13 +40,14 @@ func Dump(ctx context.Context) error {
 	}
 
 	d := &dumper{
-		selectedRecords: make(map[string]map[string]bool),
+		selectedRecords: newSelectedIDsStorage(),
 		tmpStorage:      newRowsBuffer(),
 		dumpTarget:      out,
 	}
 
 	defer func() {
-		//_ = d.tmpStorage.clear()
+		_ = d.tmpStorage.clear()
+		_ = d.selectedRecords.clear()
 	}()
 
 	return d.do(ctx)
@@ -55,7 +55,7 @@ func Dump(ctx context.Context) error {
 
 type dumper struct {
 	// selectedRecords выбранные записи по таблицам чтобы не уйти в бесконечный цикл из-за внешних ключей
-	selectedRecords   map[string]map[string]bool
+	selectedRecords   *selectedIDsStorage
 	tmpStorage        *rowsBuffer
 	tablesInsertOrder []string
 	writeErr          error
@@ -134,7 +134,7 @@ func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQ
 }
 
 func (d *dumper) selectRelatedRecords(ctx context.Context, table *schema.Table, records []map[string]any) error {
-	if d.selectedRecords[table.Name] != nil {
+	if d.selectedRecords.hasTable(table.Name) {
 		d.disableFKChecks = true
 	}
 
@@ -227,17 +227,13 @@ func (*dumper) getSelectColumnsFor(table *schema.Table, tableConfig config.Table
 }
 
 func (d *dumper) filterRecords(table *schema.Table, records []map[string]any) ([]map[string]any, error) {
-	if d.selectedRecords[table.Name] == nil {
-		d.selectedRecords[table.Name] = make(map[string]bool)
-	}
-
 	var index int
 
 	for _, record := range records {
 		pkVal := table.PrimaryKey.FormatFromRecord(record)
 
-		if !d.selectedRecords[table.Name][pkVal] {
-			d.selectedRecords[table.Name][pkVal] = true
+		if !d.selectedRecords.has(table.Name, pkVal) {
+			d.selectedRecords.add(table.Name, pkVal)
 			index++
 		}
 	}
@@ -250,16 +246,12 @@ func (d *dumper) filterForeignKeys(table *schema.Table, keys [][]any) [][]any {
 		return nil
 	}
 
-	if d.selectedRecords[table.Name] == nil {
-		d.selectedRecords[table.Name] = make(map[string]bool)
-	}
-
 	var index int
 
 	for _, key := range keys {
 		pkVal := table.PrimaryKey.Format(key)
 
-		if !d.selectedRecords[table.Name][pkVal] {
+		if !d.selectedRecords.has(table.Name, pkVal) {
 			index++
 		}
 	}
