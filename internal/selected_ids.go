@@ -71,7 +71,10 @@ func (s *selectedIDsStorage) openDb() error {
 	}
 
 	s.dbFilePath = dir + "/dumper.pogreb"
-	s.db, err = pogreb.Open(s.dbFilePath, nil)
+	s.db, err = pogreb.Open(s.dbFilePath, &pogreb.Options{
+		BackgroundSyncInterval:       0,
+		BackgroundCompactionInterval: 0,
+	})
 
 	return err
 }
