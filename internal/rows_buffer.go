@@ -2,31 +2,35 @@ package internal
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"os"
-	"sync"
-	"sync/atomic"
 )
 
-const maxMemSize = 50 * 1024 * 1024
+const maxMemSize = 50 * 1024 * 1024 // 50 MB
 
 type rowsBuffer struct {
-	mx          sync.Mutex
 	memBuffers  map[string]*bytes.Buffer
-	memSize     *atomic.Int64
+	memSize     int64
 	fileBuffers map[string]*os.File
+	err         error
 }
 
 func newRowsBuffer() *rowsBuffer {
 	return &rowsBuffer{
 		memBuffers: make(map[string]*bytes.Buffer),
-		memSize:    &atomic.Int64{},
 	}
 }
 
-func (r *rowsBuffer) getMemBuffer(key string) *tableRowsBuffer {
-	r.mx.Lock()
-	defer r.mx.Unlock()
+func (r *rowsBuffer) writef(table, format string, args ...any) {
+	if r.err != nil {
+		return
+	}
 
+	_, r.err = fmt.Fprintf(r.getMemBuffer(table), format, args...)
+}
+
+func (r *rowsBuffer) getMemBuffer(key string) *tableRowsBuffer {
 	buf, ok := r.memBuffers[key]
 	if !ok {
 		buf = new(bytes.Buffer)
@@ -37,11 +41,12 @@ func (r *rowsBuffer) getMemBuffer(key string) *tableRowsBuffer {
 }
 
 func (r *rowsBuffer) getFileBuffer(key string) (*os.File, error) {
-	r.mx.Lock()
-	defer r.mx.Unlock()
-
 	if r.fileBuffers == nil {
 		r.fileBuffers = make(map[string]*os.File)
+	}
+
+	if file, ok := r.fileBuffers[key]; ok {
+		return file, nil
 	}
 
 	file, err := os.CreateTemp("", "dumper_"+key)
@@ -55,12 +60,9 @@ func (r *rowsBuffer) getFileBuffer(key string) (*os.File, error) {
 }
 
 func (r *rowsBuffer) flush() error {
-	if r.memSize.Load() < maxMemSize {
+	if r.memSize < maxMemSize {
 		return nil
 	}
-
-	r.mx.Lock()
-	defer r.mx.Unlock()
 
 	for key, buf := range r.memBuffers {
 		file, err := r.getFileBuffer(key)
@@ -75,8 +77,7 @@ func (r *rowsBuffer) flush() error {
 		buf.Reset()
 	}
 
-	r.memBuffers = nil
-	r.memSize.Store(0)
+	r.memSize = 0
 
 	return nil
 }
@@ -95,8 +96,23 @@ func (r *rowsBuffer) clear() error {
 	return nil
 }
 
-func (r *rowsBuffer) addSize(size int64) int64 {
-	return r.memSize.Add(size)
+func (r *rowsBuffer) addSize(size int64) {
+	r.memSize += size
+}
+
+func (r *rowsBuffer) getReader(table string) io.Reader {
+	if r.err != nil {
+		return nil
+	}
+
+	file, ok := r.fileBuffers[table]
+	if !ok {
+		return r.memBuffers[table]
+	}
+
+	_, r.err = file.Seek(0, io.SeekStart)
+
+	return io.MultiReader(file, r.memBuffers[table])
 }
 
 type tableRowsBuffer struct {
@@ -109,6 +125,8 @@ func (t *tableRowsBuffer) Write(p []byte) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+
+	t.root.addSize(int64(n))
 
 	if err = t.root.flush(); err != nil {
 		return 0, err

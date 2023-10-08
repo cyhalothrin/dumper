@@ -7,8 +7,9 @@ import (
 	"io"
 	"os"
 	"regexp"
-	"slices"
 	"strings"
+
+	"slices"
 
 	"github.com/cyhalothrin/dumper/internal/config"
 	"github.com/cyhalothrin/dumper/internal/db"
@@ -40,22 +41,26 @@ func Dump(ctx context.Context) error {
 	}
 
 	d := &dumper{
-		selectedRecords:     make(map[string]map[string]bool),
-		tableInsertsBuffers: make(map[string]io.ReadWriter),
-		dumpTarget:          out,
+		selectedRecords: make(map[string]map[string]bool),
+		tmpStorage:      newRowsBuffer(),
+		dumpTarget:      out,
 	}
+
+	defer func() {
+		//_ = d.tmpStorage.clear()
+	}()
 
 	return d.do(ctx)
 }
 
 type dumper struct {
 	// selectedRecords выбранные записи по таблицам чтобы не уйти в бесконечный цикл из-за внешних ключей
-	selectedRecords     map[string]map[string]bool
-	tableInsertsBuffers map[string]io.ReadWriter
-	tablesInsertOrder   []string
-	writeErr            error
-	disableFKChecks     bool
-	dumpTarget          io.Writer
+	selectedRecords   map[string]map[string]bool
+	tmpStorage        *rowsBuffer
+	tablesInsertOrder []string
+	writeErr          error
+	disableFKChecks   bool
+	dumpTarget        io.Writer
 }
 
 func (d *dumper) do(ctx context.Context) (err error) {
@@ -125,7 +130,7 @@ func (d *dumper) selectRecords(ctx context.Context, table *schema.Table, selectQ
 
 	d.printInsertStatement(table, tableConfig, records)
 
-	return nil
+	return d.tmpStorage.err
 }
 
 func (d *dumper) selectRelatedRecords(ctx context.Context, table *schema.Table, records []map[string]any) error {
@@ -263,67 +268,63 @@ func (d *dumper) filterForeignKeys(table *schema.Table, keys [][]any) [][]any {
 }
 
 func (d *dumper) printInsertStatement(table *schema.Table, tableConfig config.TableConfig, records []map[string]any) {
-	columns := table.Columns()
-	w := d.tableInsertsBuffers[table.Name]
-	d.tablesInsertOrder = append(d.tablesInsertOrder, table.Name)
-
-	if w == nil {
-		w = bytes.NewBuffer(nil)
-		d.tableInsertsBuffers[table.Name] = w
-	} else {
-		d.writef(w, "\n")
+	if len(records) == 0 {
+		return
 	}
 
-	d.writef(w, "INSERT INTO %s (%s) VALUES \n\t", table.Name, strings.Join(columns, ", "))
+	columns := table.Columns()
+	d.tablesInsertOrder = append(d.tablesInsertOrder, table.Name)
+
+	d.tmpStorage.writef(table.Name, "\nINSERT INTO %s (%s) VALUES \n\t", table.Name, strings.Join(columns, ", "))
 
 	for i, record := range records {
 		if i > 0 {
-			d.writef(w, ",\n\t")
+			d.tmpStorage.writef(table.Name, ",\n\t")
 		}
 
-		d.writef(w, "(")
+		d.tmpStorage.writef(table.Name, "(")
 
 		for j, column := range columns {
 			if j > 0 {
-				d.writef(w, ", ")
+				d.tmpStorage.writef(table.Name, ", ")
 			}
 
 			if config.Config.Dump.AddColumnName {
-				d.writef(w, "\n\t\t# %s\n\t\t", column)
+				d.tmpStorage.writef(table.Name, "\n\t\t# %s\n\t\t", column)
 			}
 
 			if tableConfig.IsIgnoredColumn(column) {
 				// Print default value if column is ignored and it is required
-				d.writef(w, table.Column(column).DefaultValue())
+				d.tmpStorage.writef(table.Name, table.Column(column).DefaultValue())
 			} else if fakerConfig := tableConfig.UseFaker(column); fakerConfig != nil {
 				// Use fakers
-				d.writef(w, table.Column(column).Format(faker.Format(fakerConfig)))
+				d.tmpStorage.writef(table.Name, table.Column(column).Format(faker.Format(fakerConfig)))
 			} else {
 				// Print column value
-				d.writef(w, table.Column(column).Format(record[column]))
+				d.tmpStorage.writef(table.Name, table.Column(column).Format(record[column]))
 			}
 		}
 
-		d.writef(w, ")")
+		d.tmpStorage.writef(table.Name, ")")
 	}
 
-	d.printOnDuplicateKeyUpdateStatement(w, table, tableConfig)
+	d.printOnDuplicateKeyUpdateStatement(table, tableConfig)
 
-	d.writef(w, ";")
+	d.tmpStorage.writef(table.Name, ";")
 }
 
-func (d *dumper) printOnDuplicateKeyUpdateStatement(w io.Writer, table *schema.Table, tableConfig config.TableConfig) {
-	d.writef(w, " ON DUPLICATE KEY UPDATE ")
+func (d *dumper) printOnDuplicateKeyUpdateStatement(table *schema.Table, tableConfig config.TableConfig) {
+	d.tmpStorage.writef(table.Name, "\n\tON DUPLICATE KEY UPDATE ")
 
 	var colNum int
 
 	for _, column := range table.Columns() {
 		if !tableConfig.IsIgnoredColumn(column) {
 			if colNum > 0 {
-				d.writef(w, ",")
+				d.tmpStorage.writef(table.Name, ",")
 			}
 
-			d.writef(w, "%s = VALUES(%s)", column, column)
+			d.tmpStorage.writef(table.Name, "%s = VALUES(%s)", column, column)
 
 			colNum++
 		}
@@ -356,13 +357,14 @@ func (d *dumper) printDump(ctx context.Context) error {
 	}
 
 	for _, tableName := range d.tablesInsertOrder {
-		if reader := d.tableInsertsBuffers[tableName]; reader != nil {
-			_, _ = io.Copy(d.dumpTarget, reader)
+		if reader := d.tmpStorage.getReader(tableName); reader != nil {
+			_, err := io.Copy(d.dumpTarget, reader)
+			if err != nil {
+				return err
+			}
 		}
 
 		d.writef(d.dumpTarget, "\n\n")
-
-		delete(d.tableInsertsBuffers, tableName)
 	}
 
 	return nil
